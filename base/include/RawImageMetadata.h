@@ -210,6 +210,8 @@ protected:
 			break;
 		case ImageMetadata::YUYV:	
 		case ImageMetadata::UYVY:
+		    channels = 2;
+			break;
 		case ImageMetadata::BGR:
 		case ImageMetadata::RGB:
 		case ImageMetadata::YUV411_I:

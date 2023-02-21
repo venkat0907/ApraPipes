@@ -19,7 +19,7 @@ public:
         YUV444, // Planar
 		YUV420, // Planar
 		UYVY,	// Interleaved	
-		YUYV, 	
+		YUYV, 	//Interleaved
 		NV12,
 		BAYERBG10 = 20, // BGGR
 		BAYERBG8, // BGGR
