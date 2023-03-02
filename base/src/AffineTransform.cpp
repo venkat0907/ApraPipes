@@ -20,12 +20,40 @@ public:
 	{
 		nppStreamCtx.hStream = props.stream->getCudaStream();
 	}
-
+	int setInterPolation(AffineTransformProps::Interpolation eInterpolation)
+	{
+		switch (props.eInterpolation)
+		{
+		case AffineTransformProps::NN:
+			return NppiInterpolationMode::NPPI_INTER_NN;
+		case AffineTransformProps::LINEAR:
+			return NppiInterpolationMode::NPPI_INTER_LINEAR;
+		case AffineTransformProps::CUBIC:
+			return NppiInterpolationMode::NPPI_INTER_CUBIC;
+		case AffineTransformProps::UNDEFINED:
+			return NppiInterpolationMode::NPPI_INTER_UNDEFINED; // not supported 
+		case AffineTransformProps::CUBIC2P_BSPLINE:
+			return NppiInterpolationMode::NPPI_INTER_CUBIC2P_BSPLINE;// not supported 
+		case AffineTransformProps::CUBIC2P_CATMULLROM:
+			return NppiInterpolationMode::NPPI_INTER_CUBIC2P_CATMULLROM;
+		case AffineTransformProps::CUBIC2P_B05C03:
+			return NppiInterpolationMode::NPPI_INTER_CUBIC2P_B05C03; // not supported 
+		case AffineTransformProps::SUPER:
+			return NppiInterpolationMode::NPPI_INTER_SUPER;  // not supported
+		case AffineTransformProps::LANCZOS:
+			return NppiInterpolationMode::NPPI_INTER_LANCZOS; // not supported 
+		case AffineTransformProps::LANCZOS3_ADVANCED:
+			return NppiInterpolationMode::NPPI_INTER_LANCZOS3_ADVANCED; // not supported
+		
+		default:
+			throw new AIPException(AIP_NOTEXEPCTED, "Unknown value for Interpolation!");
+		}
+	}
 	~Detail()
 	{
 	}
 
-	void setMetadata(framemetadata_sp &metadata)
+	void setMetadata(framemetadata_sp& metadata)
 	{
 		if (mFrameType != metadata->getFrameType())
 		{
@@ -55,7 +83,7 @@ public:
 			int x, y, w, h;
 			w = rawMetadata->getWidth();
 			h = rawMetadata->getHeight();
-			RawImageMetadata outputMetadata(w * props.scale, h * props.scale, rawMetadata->getImageType(), rawMetadata->getType(), rawMetadata->getStep(), rawMetadata->getDepth(), FrameMetadata::CUDA_DEVICE,true);
+			RawImageMetadata outputMetadata(w*props.scale, h*props.scale, rawMetadata->getImageType(), rawMetadata->getType(), rawMetadata->getStep(), rawMetadata->getDepth(), FrameMetadata::CUDA_DEVICE, true);
 			auto rawOutMetadata = FrameMetadataFactory::downcast<RawImageMetadata>(mOutputMetadata);
 			rawOutMetadata->setData(outputMetadata);
 			imageType = rawMetadata->getImageType();
@@ -65,10 +93,11 @@ public:
 		if (mFrameType == FrameMetadata::RAW_IMAGE_PLANAR)
 		{
 			auto rawMetadata = FrameMetadataFactory::downcast<RawImagePlanarMetadata>(metadata);
-			int x, y, w, h;
+			int x, y;
+			float w, h;
 			w = rawMetadata->getWidth(0);
 			h = rawMetadata->getHeight(0);
-			RawImagePlanarMetadata outputMetadata(w * props.scale, h * props.scale, rawMetadata->getImageType(), rawMetadata->getStep(0), rawMetadata->getDepth(), FrameMetadata::CUDA_DEVICE);
+			RawImagePlanarMetadata outputMetadata(w*props.scale, h*props.scale, rawMetadata->getImageType(), rawMetadata->getStep(1), rawMetadata->getDepth(), FrameMetadata::CUDA_DEVICE);
 			auto rawOutMetadata = FrameMetadataFactory::downcast<RawImagePlanarMetadata>(mOutputMetadata);
 			rawOutMetadata->setData(outputMetadata);
 			imageType = rawMetadata->getImageType();
@@ -88,13 +117,6 @@ public:
 		case ImageMetadata::RGBA:
 		case ImageMetadata::BGRA:
 		case ImageMetadata::YUV444:
-		case ImageMetadata::YUV420:
-			if (depth != CV_8U)
-			{
-				throw AIPException(AIP_NOTIMPLEMENTED, "Rotate not supported for bit depth<" + std::to_string(depth) + ">");
-			}
-			break;
-		case ImageMetadata::YUYV:
 			if (depth != CV_8U)
 			{
 				throw AIPException(AIP_NOTIMPLEMENTED, "Rotate not supported for bit depth<" + std::to_string(depth) + ">");
@@ -103,15 +125,7 @@ public:
 		}
 		mFrameLength = mOutputMetadata->getDataSize();
 		setMetadataHelper(metadata, mOutputMetadata);
-		double si, co;
-		si = sin(props.angle * PI / 180);
-		co = props.scale * cos(props.angle * PI / 180);
-		acoeff[0][0] = co;
-		acoeff[0][1] = -si;
-		acoeff[0][2] = props.x;
-		acoeff[1][0] = si;
-		acoeff[1][1] = co;
-		acoeff[1][2] = props.y;
+
 	}
 
 	bool compute(void *buffer, void *outBuffer)
@@ -120,50 +134,60 @@ public:
 		auto bufferNPP = static_cast<Npp8u *>(buffer);
 		auto outBufferNPP = static_cast<Npp8u *>(outBuffer);
 
-		if (mFrameType == FrameMetadata::RAW_IMAGE_PLANAR)
+		int inWidth = srcSize[0].width;
+		int inHeight = srcSize[0].height;
+		int outWidth = dstSize[0].width;
+		int outHeight = dstSize[0].height;
+
+		double inCenterX = inWidth / 2.0;
+		double inCenterY = inHeight / 2.0;
+
+		double outCenterX = outWidth / 2.0;
+		double outCenterY = outHeight / 2.0;
+
+		double tx = (outCenterX - inCenterX); // translation factor which is used to shift image to center in output image
+		double ty = (outCenterY - inCenterY);
+
+		double si, co;
+		si = sin(props.angle * PI / 180);
+		co = props.scale * cos(props.angle * PI / 180);
+
+		double cx = props.x + (srcSize[0].width / 2); // rotating the image through its center
+		double cy = props.y + (srcSize[0].height / 2);
+
+		acoeff[0][0] = co;
+		acoeff[0][1] = -si;
+		acoeff[0][2] = ((1 - co) * cx + si * cy) + tx; // after rotation we translate it to center of output frame
+		acoeff[1][0] = si;
+		acoeff[1][1] = co;
+		acoeff[1][2] = (-si * cx + (1 - co) * cy) + ty;
+
+		if (mFrameType == FrameMetadata::RAW_IMAGE_PLANAR) // currently supported only for YUV444
 		{
 			for (auto i = 0; i < channels; i++)
 			{
+
 				src[i] = bufferNPP + srcNextPtrOffset[i];
 				dst[i] = outBufferNPP + dstNextPtrOffset[i];
 
 				status = nppiWarpAffine_8u_C1R_Ctx(src[i],
-												   srcSize[i],
-												   srcPitch[i],
-												   srcRect[i],
-												   dst[i],
-												   dstPitch[i],
-												   dstRect[i],
-												   acoeff,
-												   NPPI_INTER_NN,
-												   nppStreamCtx);
+					srcSize[i],
+					srcPitch[i],
+					srcRect[i],
+					dst[i],
+					dstPitch[i],
+					dstRect[i],
+					acoeff,
+					setInterPolation(props.eInterpolation),
+					nppStreamCtx);
 			}
+
 		}
 		
 		if (mFrameType == FrameMetadata::RAW_IMAGE)
 		{		
-			if (channels == 2)
-			{
-				for (auto i = 0; i < channels; i++)
-				{
-					src[i] = bufferNPP + srcNextPtrOffset[i];
-					dst[i] = outBufferNPP + dstNextPtrOffset[i];
-
-					status = nppiWarpAffine_8u_C1R_Ctx(src[i],
-						srcSize[i],
-						srcPitch[i],
-						srcRect[i],
-						dst[i],
-						dstPitch[i],
-						dstRect[i],
-						acoeff,
-						NPPI_INTER_NN,
-						nppStreamCtx);
-				}
-			}
-
-			else if (channels == 1 && depth == CV_8UC1)
-			{
+			 if (channels == 1 && depth == CV_8UC1)
+			 {
 					status = nppiWarpAffine_8u_C1R_Ctx(const_cast<const Npp8u*>(bufferNPP),
 						srcSize[0],
 						srcPitch[0],
@@ -172,9 +196,9 @@ public:
 						dstPitch[0],
 						dstRect[0],
 						acoeff,
-						NPPI_INTER_NN,
+						setInterPolation(props.eInterpolation),
 						nppStreamCtx);
-			}
+			 }
 
 			else if (channels == 3)
 			{
@@ -186,7 +210,7 @@ public:
 						dstPitch[0],
 						dstRect[0],
 						acoeff,
-						NPPI_INTER_NN,
+						setInterPolation(props.eInterpolation),
 						nppStreamCtx);
 			}
 
@@ -200,15 +224,15 @@ public:
 						dstPitch[0],
 						dstRect[0],
 						acoeff,
-						NPPI_INTER_NN,
+						setInterPolation(props.eInterpolation),
 						nppStreamCtx);
 			}
 			
 		}
 		if (status != NPP_SUCCESS)
 		{
-			LOG_ERROR << "resize failed<" << status << ">";
-			throw AIPException(AIP_FATAL, "Failed to tranform the image");
+			LOG_ERROR << "AffineTransform failed<" << status << ">";
+			//throw AIPException(AIP_FATAL, "Failed to tranform the image");
 		}
 		return true;
 	}
@@ -236,8 +260,9 @@ public:
 			auto outputRawMetadata = FrameMetadataFactory::downcast<RawImageMetadata>(output);
 
 			channels = inputRawMetadata->getChannels();
+
 			srcSize[0] = {inputRawMetadata->getWidth(), inputRawMetadata->getHeight()};
-			srcRect[0] = {0, 0, inputRawMetadata->getWidth(), inputRawMetadata->getHeight()};
+		    srcRect[0] = {0, 0, inputRawMetadata->getWidth(), inputRawMetadata->getHeight()};
 			srcPitch[0] = static_cast<int>(inputRawMetadata->getStep());
 			srcNextPtrOffset[0] = 0;
 			dstSize[0] = {outputRawMetadata->getWidth(), outputRawMetadata->getHeight()};
@@ -287,7 +312,7 @@ public:
 
 	Npp8u *src[3];
 	Npp8u *dst[3];
-	double acoeff[2][3] = {{-1, -1, -1}, {-1, -1, -1}};
+	double acoeff[3][3] = {{-1, -1, -1}, {-1, -1, -1},{-1, -1, -1} };
 };
 
 AffineTransform::AffineTransform(AffineTransformProps props) : Module(TRANSFORM, "AffineTransform", props)
